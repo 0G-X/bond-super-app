@@ -78,7 +78,7 @@ Bond Super App consolidates four DeFi frontends into a unified application using
 | **Styling** | Tailwind CSS | 4.x | Utility-first, fast iteration |
 | **State** | Zustand | 5.x | Lightweight, already used |
 | **Data Fetching** | TanStack Query | 5.x | Caching, background refresh |
-| **Wallet** | wagmi + RainbowKit | 2.x | Standard EVM tooling |
+| **Wallet** | Privy (Embedded) | 2.x | Embedded wallets, delegated signing |
 | **Blockchain** | viem | 2.x | Type-safe EVM interactions |
 | **Charts** | TradingView LW | 5.x | Professional trading charts |
 | **Build** | Turborepo | 2.x | Monorepo caching |
@@ -452,73 +452,181 @@ export const bondTheme = createTheme({
 
 ### 5.2 Wallet Package (`packages/wallet`)
 
-Unified wallet connection abstraction.
+Unified wallet connection with **Privy embedded wallets** and **delegated signing**.
+
+#### Why Privy with Embedded Wallets?
+
+- **No wallet popups**: Users sign in with email/social, Privy creates a wallet for them
+- **Delegated signing**: App can sign transactions on behalf of users (no approval popups)
+- **Session keys**: Users approve once, app handles subsequent transactions automatically
+- **Better UX**: Trading feels like a Web2 app, not constant MetaMask popups
 
 ```typescript
 // packages/wallet/src/WalletProvider.tsx
-import { WagmiProvider, createConfig, http } from 'wagmi';
-import { RainbowKitProvider, getDefaultConfig } from '@rainbow-me/rainbowkit';
+import { PrivyProvider } from '@privy-io/react-auth';
+import { createConfig, http, WagmiProvider } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { zeroGMainnet, zeroGTestnet } from './chains';
 
 const queryClient = new QueryClient();
 
+const wagmiConfig = createConfig({
+  chains: [zeroGMainnet, zeroGTestnet],
+  transports: {
+    [zeroGMainnet.id]: http(),
+    [zeroGTestnet.id]: http(),
+  },
+});
+
 interface WalletProviderProps {
   children: React.ReactNode;
-  projectId: string;
-  appName: string;
-  chains?: Chain[];
+  appId: string; // Privy App ID
 }
 
-export const WalletProvider = ({
-  children,
-  projectId,
-  appName,
-  chains = [zeroGMainnet, zeroGTestnet],
-}: WalletProviderProps) => {
-  const config = getDefaultConfig({
-    appName,
-    projectId,
-    chains,
-    transports: Object.fromEntries(
-      chains.map(chain => [chain.id, http()])
-    ),
-  });
-
+export const WalletProvider = ({ children, appId }: WalletProviderProps) => {
   return (
-    <WagmiProvider config={config}>
+    <PrivyProvider
+      appId={appId}
+      config={{
+        // Embedded wallet config
+        embeddedWallets: {
+          createOnLogin: 'users-without-wallets', // Auto-create for new users
+          noPromptOnSignature: true, // Don't prompt for every signature
+        },
+        // Login methods
+        loginMethods: ['email', 'google', 'twitter', 'wallet'],
+        // Default chain
+        defaultChain: zeroGMainnet,
+        supportedChains: [zeroGMainnet, zeroGTestnet],
+        // Appearance
+        appearance: {
+          theme: 'dark',
+          accentColor: '#3b82f6',
+        },
+      }}
+    >
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider>
+        <WagmiProvider config={wagmiConfig}>
           {children}
-        </RainbowKitProvider>
+        </WagmiProvider>
       </QueryClientProvider>
-    </WagmiProvider>
+    </PrivyProvider>
   );
 };
 ```
 
-#### Wallet Hooks
+#### Delegated Signing (App as Signer)
+
+The key feature: users approve a **session** once, and the app can sign transactions automatically.
+
+```typescript
+// packages/wallet/src/hooks/useDelegatedWallet.ts
+import { usePrivy, useWallets } from '@privy-io/react-auth';
+import { useMemo } from 'react';
+
+export const useDelegatedWallet = () => {
+  const { ready, authenticated, user, login, logout } = usePrivy();
+  const { wallets } = useWallets();
+
+  // Get the embedded wallet (Privy-managed)
+  const embeddedWallet = useMemo(
+    () => wallets.find((w) => w.walletClientType === 'privy'),
+    [wallets]
+  );
+
+  // Sign transaction WITHOUT user popup
+  const signTransaction = async (tx: TransactionRequest) => {
+    if (!embeddedWallet) throw new Error('No embedded wallet');
+
+    // Get the provider - this is where the magic happens
+    // Privy's embedded wallet signs automatically
+    const provider = await embeddedWallet.getEthersProvider();
+    const signer = provider.getSigner();
+
+    // This signs WITHOUT showing a popup to the user
+    return signer.sendTransaction(tx);
+  };
+
+  // Sign message WITHOUT user popup
+  const signMessage = async (message: string) => {
+    if (!embeddedWallet) throw new Error('No embedded wallet');
+    const provider = await embeddedWallet.getEthersProvider();
+    const signer = provider.getSigner();
+    return signer.signMessage(message);
+  };
+
+  return {
+    ready,
+    authenticated,
+    address: embeddedWallet?.address,
+    user,
+    login,
+    logout,
+    signTransaction,
+    signMessage,
+    embeddedWallet,
+  };
+};
+```
+
+#### Example: Auto-Signing Trade Orders
+
+```typescript
+// packages/trade/src/hooks/useSubmitOrder.ts
+import { useDelegatedWallet } from '@bond/wallet';
+import { encodeFunctionData } from 'viem';
+import { orderAbi } from '../abis/order';
+
+export const useSubmitOrder = () => {
+  const { signTransaction, address } = useDelegatedWallet();
+
+  const submitOrder = async (order: OrderParams) => {
+    // Encode the contract call
+    const data = encodeFunctionData({
+      abi: orderAbi,
+      functionName: 'placeOrder',
+      args: [order.market, order.side, order.size, order.price],
+    });
+
+    // Sign and send - NO POPUP for user!
+    const tx = await signTransaction({
+      to: ORDER_CONTRACT_ADDRESS,
+      data,
+      value: 0n,
+    });
+
+    return tx.hash;
+  };
+
+  return { submitOrder };
+};
+```
+
+#### Legacy Wallet Support
+
+Users who prefer their own wallet (MetaMask, etc.) can still connect:
 
 ```typescript
 // packages/wallet/src/hooks/useWallet.ts
-import { useAccount, useConnect, useDisconnect, useBalance } from 'wagmi';
-import { useConnectModal } from '@rainbow-me/rainbowkit';
+import { usePrivy, useWallets } from '@privy-io/react-auth';
 
 export const useWallet = () => {
-  const { address, isConnected, isConnecting } = useAccount();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { openConnectModal } = useConnectModal();
-  const { data: balance } = useBalance({ address });
+  const { ready, authenticated, login, logout, user } = usePrivy();
+  const { wallets } = useWallets();
+
+  // Prefer embedded, fallback to external
+  const activeWallet = wallets.find(w => w.walletClientType === 'privy')
+    ?? wallets[0];
 
   return {
-    address,
-    isConnected,
-    isConnecting,
-    balance: balance?.formatted,
-    connect: openConnectModal,
-    disconnect,
-    connectors,
+    ready,
+    authenticated,
+    address: activeWallet?.address,
+    isEmbedded: activeWallet?.walletClientType === 'privy',
+    login,
+    logout,
+    user,
+    wallets,
   };
 };
 ```
@@ -994,8 +1102,8 @@ export const useDeposit = () => {
 ```bash
 # apps/web/.env.local
 
-# Wallet
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id
+# Privy (Embedded Wallet)
+NEXT_PUBLIC_PRIVY_APP_ID=your_privy_app_id
 
 # Trade Module
 NEXT_PUBLIC_TRADE_API_URL=https://api.trade.bond.app
@@ -1050,7 +1158,7 @@ import { useOrderStore } from '@bond/trade';
 ### Migrating from Jaine (Swap)
 
 1. **Convert from Vite** to Next.js compatible
-2. **Replace @phongjimmy/wallet** with shared wallet
+2. **Replace @phongjimmy/wallet** with Privy embedded wallet
 3. **Keep @zer0dex/sdk** for AMM logic
 4. **Modularize stores**
 
@@ -1060,7 +1168,7 @@ import { useAccount } from '@phongjimmy/wallet';
 import { SwapPanel } from './components/Swap';
 
 // After (Bond)
-import { useWallet } from '@bond/wallet';
+import { useDelegatedWallet } from '@bond/wallet';
 import { SwapPanel } from '@bond/swap';
 ```
 
@@ -1075,7 +1183,7 @@ Build from scratch based on AAVE comparison:
 
 ### Migrating Prediction Market
 
-1. **Replace Privy** with shared wallet
+1. **Keep Privy** - already using it, move config to shared wallet package
 2. **Extract components** to package
 3. **Connect to backend API** (currently mock)
 4. **Integrate theme**
