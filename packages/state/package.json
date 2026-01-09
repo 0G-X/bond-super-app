@@ -13,6 +13,10 @@
   "scripts": {
     "lint": "biome check src"
   },
+  "dependencies": {
+    "zustand": "^5.0.0",
+    "immer": "^10.0.0"
+  },
   "devDependencies": {
     "typescript": "^5.7.2"
   }
