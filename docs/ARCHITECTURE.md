@@ -118,6 +118,47 @@ Users who want to use their own MetaMask/Rabby can still connect externally.
 
 ---
 
+## Multi-Chain Support
+
+Bond is chain-agnostic. Users can switch between supported chains, and all modules adapt.
+
+### How It Works
+
+1. **Chain Registry**: Central list of supported chains with their config
+2. **Chain Switcher**: UI component in header to switch chains
+3. **Chain-Aware Contracts**: Each module stores contract addresses per chain
+4. **Auto-Reload**: When chain switches, positions/balances reload for new chain
+
+### Supported Chains (Initial)
+
+| Chain | Type | Status |
+|-------|------|--------|
+| 0G Mainnet | Production | Primary |
+| 0G Testnet | Testing | Development |
+| (More TBD) | - | Future |
+
+### Adding a New Chain
+
+To add a new chain, update the chain registry in `@bond/wallet`:
+1. Add chain config (ID, name, RPC, explorer)
+2. Add contract addresses for each module
+3. Chain automatically appears in switcher
+
+### Contract Address Structure
+
+Each module has contracts per chain:
+```
+Trade Module:
+  - 0G Mainnet: 0x123...
+  - 0G Testnet: 0x456...
+
+Swap Module:
+  - 0G Mainnet: 0xabc...
+  - 0G Testnet: 0xdef...
+```
+
+---
+
 ## Page Routing
 
 Each product module has its own section of the app:
@@ -225,8 +266,9 @@ Plus contract addresses for each module.
 1. **One app, four products** - users visit bond.app and access everything
 2. **Shared components** - buttons, modals, wallet work the same everywhere
 3. **Privy for auth** - email login, no MetaMask popups
-4. **Isolated modules** - each product's code is separate but shares infrastructure
-5. **Monorepo** - all code in one repo, easy to make cross-cutting changes
+4. **Multi-chain** - switch chains, everything adapts
+5. **Isolated modules** - each product's code is separate but shares infrastructure
+6. **Monorepo** - all code in one repo, easy to make cross-cutting changes
 
 ---
 
