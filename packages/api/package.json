@@ -13,6 +13,9 @@
   "scripts": {
     "lint": "biome check src"
   },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.0"
+  },
   "devDependencies": {
     "typescript": "^5.7.2"
   }
